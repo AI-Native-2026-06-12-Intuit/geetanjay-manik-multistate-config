@@ -8,8 +8,13 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# NOTE: no 00-namespace.yaml here. A Namespace is CLUSTER-scoped, so Argo CD
+# gates it via the AppProject's clusterResourceWhitelist (which is [] = deny-all),
+# not namespaceResourceWhitelist. An explicit Namespace manifest is therefore
+# rejected ("Namespace is not permitted in project"). The target namespace is
+# created by the Application's `CreateNamespace=true` syncOption instead, which
+# runs outside project resource governance. See GITOPS.md.
 resources:
-  - 00-namespace.yaml
   - 05-backing.yaml
   - 10-multistate-api.deployment.yaml
   - 20-multistate-api.service.yaml
