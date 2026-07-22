@@ -1,0 +1,47 @@
+# argocd/applications/multistate-api-dev.yaml
+# Single-env Application for the dev overlay -- the concrete anchor a new
+# contributor reads. The ApplicationSet (Task 3) generates staging + prod.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: multistate-api-dev
+  namespace: argocd
+  # Mandatory: without it, deleting the Application orphans the workload.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    env:  dev
+    team: multistate
+spec:
+  # MUST be the project name -- never "default".
+  project: multistate
+
+  source:
+    repoURL:        https://github.com/AI-Native-2026-06-12-Intuit/geetanjay-manik-multistate-config.git
+    path:           overlays/dev
+    targetRevision: main
+    # AUDIT NOTE: no Application-level kustomize.images override here. The image
+    # tag is owned solely by overlays/dev/kustomization.yaml (what CI's
+    # _bump-config rewrites). Pinning it here too would shadow that bump.
+
+  destination:
+    server:    https://kubernetes.default.svc
+    namespace: multistate-dev
+
+  syncPolicy:
+    automated:
+      prune:      true    # remove resources deleted from Git
+      selfHeal:   true    # revert drift from a live `kubectl edit`
+      allowEmpty: false   # never sync an empty manifest set
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration:    10s
+        factor:      2
+        maxDuration: 3m

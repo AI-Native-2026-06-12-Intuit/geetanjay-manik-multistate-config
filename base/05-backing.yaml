@@ -1,0 +1,178 @@
+# manifests/05-backing.yaml — dev-only backing services (Postgres + Redis).
+#
+# NOT part of the reference's API-only set: this app requires Postgres at startup
+# (JPA/Hikari — verified it exits(1) without it) and Redis under the `smoke`
+# profile (Bucket4j/cache). They run in-cluster so the API pods actually reach
+# Ready. Ephemeral (no PVC) — this is a throwaway dev cluster. Applied at "05"
+# so `kubectl apply -f manifests/` brings them up before the API (10).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: multistate-db-secret
+  namespace: multistate-dev
+  labels:
+    app.kubernetes.io/part-of: multistate
+type: Opaque
+stringData:
+  # PLACEHOLDER only (like 40-multistate-api.secret.yaml) — never a committed
+  # working password. Postgres reads this as POSTGRES_PASSWORD; scripts/k8s-up.sh
+  # (and CI, from CI_PG_PASSWORD) overrides it and the app Secret with the same
+  # value at apply time. The placeholder matches 40's so a bare apply still works.
+  spring.datasource.password: replace-at-apply-time-from-secrets-manager
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: multistate-dev
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: multistate
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: database
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: pg, containerPort: 5432 }
+          env:
+            - { name: POSTGRES_USER, value: multistate_dev }
+            - { name: POSTGRES_DB,   value: multistate_dev }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: multistate-db-secret, key: spring.datasource.password }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "multistate_dev", "-d", "multistate_dev"] }
+            periodSeconds: 5
+            timeoutSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: multistate-dev
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - { name: pg, port: 5432, targetPort: pg, protocol: TCP }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: multistate-dev
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: multistate
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/component: cache
+    spec:
+      containers:
+        - name: redis
+          image: redis:7
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: redis, containerPort: 6379 }
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+            timeoutSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: multistate-dev
+  labels:
+    app.kubernetes.io/name: redis
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - { name: redis, port: 6379, targetPort: redis, protocol: TCP }
+---
+# Kafka (KRaft, single node). Required at startup: the app's KafkaAdmin resolves
+# spring.kafka.bootstrap-servers eagerly and dies on an unresolvable host, even
+# though the `smoke` profile disables the listener. The `kafka` Service makes
+# kafka:9092 resolve.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  namespace: multistate-dev
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: broker
+    app.kubernetes.io/part-of: multistate
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka
+        app.kubernetes.io/component: broker
+    spec:
+      containers:
+        - name: kafka
+          image: apache/kafka:3.7.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: kafka, containerPort: 9092 }
+            - { name: ctrl,  containerPort: 9093 }
+          env:
+            - { name: KAFKA_NODE_ID, value: "1" }
+            - { name: KAFKA_PROCESS_ROLES, value: "broker,controller" }
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@localhost:9093" }
+            - { name: KAFKA_LISTENERS, value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093" }
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT://kafka:9092" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT" }
+            - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: "PLAINTEXT" }
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+          readinessProbe:
+            tcpSocket: { port: 9092 }
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            timeoutSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: multistate-dev
+  labels:
+    app.kubernetes.io/name: kafka
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kafka
+  ports:
+    - { name: kafka, port: 9092, targetPort: kafka, protocol: TCP }

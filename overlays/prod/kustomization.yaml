@@ -1,0 +1,31 @@
+# overlays/prod/kustomization.yaml — mirrors dev with prod's ns/replicas/config.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namespace: multistate-prod
+
+images:
+  - name:    uptimecrew/multistate-api
+    newName: uptimecrew/multistate-api
+    newTag:  "0.1.0"
+
+# prod runs three replicas (matches the base default; explicit for clarity).
+replicas:
+  - name:  multistate-api
+    count: 3
+
+# prod runs quietest at WARN; profile carries the env token (see dev note).
+patches:
+  - target:
+      kind: ConfigMap
+      name: multistate-api-config
+    patch: |-
+      - op: replace
+        path: /data/SPRING_PROFILES_ACTIVE
+        value: smoke,k8s,prod
+      - op: replace
+        path: /data/LOGGING_LEVEL_ROOT
+        value: WARN

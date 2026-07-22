@@ -1,0 +1,47 @@
+# overlays/dev/kustomization.yaml — smallest viable patch over the W5 D3 base.
+# staging/ and prod/ mirror this shape with different namespace + replicas + tag.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Per-env namespace — Kustomize rewrites every resource's metadata.namespace
+# (and renames the Namespace object itself) at build time.
+namespace: multistate-dev
+
+# Sync-wave: the intra-app ordering (Namespace -1, workload 0) lives on the
+# resources themselves (base/00-namespace.yaml). The cross-env ordering
+# (dev→staging→prod) lives on the generated Applications (the ApplicationSet).
+
+# Image-tag rewrite. In the real flow CI's _bump-config rewrites newTag to the
+# freshly-pushed SHA. For this local smoke it pins the locally-built 0.1.0 image
+# (imported into k3d with `k3d image import`) so the pod actually runs — the
+# reference's 1f1f... placeholder is not a pullable image.
+images:
+  - name:    uptimecrew/multistate-api
+    newName: uptimecrew/multistate-api
+    newTag:  "0.1.0"
+
+# dev runs hot at one replica (base ships 3).
+replicas:
+  - name:  multistate-api
+    count: 1
+
+# Per-env config override. AUDIT NOTE: the reference patch sets
+# SPRING_PROFILES_ACTIVE=dev + LOG_LEVEL=DEBUG. Neither fits this repo verbatim —
+# the ConfigMap key is LOGGING_LEVEL_ROOT (not LOG_LEVEL), and the base comment
+# warns that dropping the boot-critical `smoke` profile breaks the schemaless dev
+# DB. So we APPEND the env token to the profile (harmless if no application-dev
+# properties exist) rather than replacing it, and override the real log key.
+patches:
+  - target:
+      kind: ConfigMap
+      name: multistate-api-config
+    patch: |-
+      - op: replace
+        path: /data/SPRING_PROFILES_ACTIVE
+        value: smoke,k8s,dev
+      - op: replace
+        path: /data/LOGGING_LEVEL_ROOT
+        value: DEBUG

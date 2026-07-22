@@ -1,0 +1,33 @@
+# overlays/staging/kustomization.yaml — mirrors dev with staging's ns/replicas/config.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namespace: multistate-staging
+
+# Same locally-built image as dev for the smoke; CI's _bump-config promotes tags
+# per env in the real flow.
+images:
+  - name:    uptimecrew/multistate-api
+    newName: uptimecrew/multistate-api
+    newTag:  "0.1.0"
+
+# staging runs two replicas.
+replicas:
+  - name:  multistate-api
+    count: 2
+
+# staging tightens logging to INFO; profile carries the env token (see dev note).
+patches:
+  - target:
+      kind: ConfigMap
+      name: multistate-api-config
+    patch: |-
+      - op: replace
+        path: /data/SPRING_PROFILES_ACTIVE
+        value: smoke,k8s,staging
+      - op: replace
+        path: /data/LOGGING_LEVEL_ROOT
+        value: INFO

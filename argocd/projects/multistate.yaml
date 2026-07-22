@@ -1,0 +1,82 @@
+# argocd/projects/multistate.yaml
+# AppProject scoping the multistate capstone team. Every Application in this
+# assignment has spec.project = multistate -- never "default".
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: multistate
+  namespace: argocd
+  # Prune generated Applications if the project is ever retired.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: multistate-api capstone -- GitOps overlays + observability
+
+  # WHICH repos may an Application in this project use as source? Narrow on
+  # purpose -- no '*'. REPO SUB: this trainee's gitops config repo.
+  sourceRepos:
+    - https://github.com/AI-Native-2026-06-12-Intuit/geetanjay-manik-multistate-config.git
+
+  # WHICH (cluster, namespace) pairs are legal? Each env its own namespace.
+  destinations:
+    - server:    https://kubernetes.default.svc
+      namespace: multistate-dev
+    - server:    https://kubernetes.default.svc
+      namespace: multistate-staging
+    - server:    https://kubernetes.default.svc
+      namespace: multistate-prod
+
+  # The app team creates NO cluster-scoped resources. Empty = full deny.
+  clusterResourceWhitelist: []
+
+  # Namespace-scoped kinds the manifests use (plus forward-looking observability
+  # kinds for when the Prometheus Operator is managed). Anything else is denied.
+  namespaceResourceWhitelist:
+    - {group: "",                       kind: Namespace}
+    - {group: "",                       kind: Service}
+    - {group: "",                       kind: ConfigMap}
+    - {group: "",                       kind: Secret}
+    - {group: "",                       kind: ServiceAccount}
+    - {group: apps,                     kind: Deployment}
+    - {group: autoscaling,              kind: HorizontalPodAutoscaler}
+    - {group: policy,                   kind: PodDisruptionBudget}
+    - {group: networking.k8s.io,        kind: NetworkPolicy}
+    - {group: monitoring.coreos.com,    kind: ServiceMonitor}
+    - {group: monitoring.coreos.com,    kind: PrometheusRule}
+
+  # Quota knobs are platform-owned -- explicitly blocked (base/00-namespace.yaml
+  # deliberately drops the W5 D3 ResourceQuota + LimitRange for this reason).
+  namespaceResourceBlacklist:
+    - {group: "", kind: ResourceQuota}
+    - {group: "", kind: LimitRange}
+
+  # Deny auto-sync to prod over the weekend; a human can still force-sync on-call.
+  syncWindows:
+    - kind: deny
+      schedule: "0 17 * * 5"        # Friday 17:00
+      duration: 60h                 # through Monday 05:00
+      applications:
+        - "multistate-api-prod"
+      manualSync: true
+
+  # Project-scoped RBAC -- two roles (Task 2 documents these in full).
+  roles:
+    - name: developers
+      description: Read everything; sync dev and staging only.
+      policies:
+        - p, proj:multistate:developers, applications, get,    multistate/*,                      allow
+        - p, proj:multistate:developers, applications, sync,   multistate/multistate-api-dev,     allow
+        - p, proj:multistate:developers, applications, sync,   multistate/multistate-api-staging, allow
+        - p, proj:multistate:developers, applications, delete, multistate/*,                      deny
+        - p, proj:multistate:developers, logs,         get,    multistate/*,                      allow
+      groups:
+        - uptimecrew:multistate-engineers
+    - name: releasers
+      description: Full sync including prod. Cannot delete Applications.
+      policies:
+        - p, proj:multistate:releasers, applications, get,      multistate/*, allow
+        - p, proj:multistate:releasers, applications, sync,     multistate/*, allow
+        - p, proj:multistate:releasers, applications, action/*, multistate/*, allow
+        - p, proj:multistate:releasers, applications, delete,   multistate/*, deny
+      groups:
+        - uptimecrew:multistate-engineers-releasers

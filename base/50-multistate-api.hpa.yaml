@@ -1,0 +1,35 @@
+# manifests/50-multistate-api.hpa.yaml — autoscale on CPU.
+# autoscaling/v2 (v1 is CPU-only, no behavior block). Targets 70% of the
+# container's resources.requests.cpu (250m → scales up past ~175m avg). Min 2
+# keeps the service HA; max 5 caps blast radius. Needs metrics-server (k3d ships it).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: multistate-api
+  namespace: multistate-dev
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind:       Deployment
+    name:       multistate-api
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type:               Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0          # react fast on burst
+      policies:
+        - { type: Percent, value: 100, periodSeconds: 15 }
+        - { type: Pods,    value: 2,   periodSeconds: 60 }
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300        # 5-minute cool-down (anti-flap)
+      policies:
+        - { type: Percent, value: 25, periodSeconds: 60 }
+      selectPolicy: Min
