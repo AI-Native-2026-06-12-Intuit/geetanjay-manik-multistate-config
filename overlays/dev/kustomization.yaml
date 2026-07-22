@@ -45,3 +45,17 @@ patches:
       - op: replace
         path: /data/LOGGING_LEVEL_ROOT
         value: DEBUG
+  # dev pins the HPA to a single replica: on the laptop k3d smoke cluster the
+  # base min=2/max=5 lets booting JVMs peg CPU and scale out until they starve
+  # each other. One replica boots cleanly and reaches Healthy. (staging/prod keep
+  # the base HPA range.)
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: multistate-api
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+      - op: replace
+        path: /spec/maxReplicas
+        value: 1
