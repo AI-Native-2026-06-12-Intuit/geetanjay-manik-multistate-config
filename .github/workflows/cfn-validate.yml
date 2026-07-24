@@ -13,8 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
-  id-token: write   # OIDC -> assume the CFN-deploy role for validate-template
+  contents: read   # no id-token: OIDC is not enabled for this org (see below)
 
 jobs:
   validate:
@@ -38,11 +37,14 @@ jobs:
       - name: cfn-nag
         run: cfn_nag_scan --input-path cfn/ --fail-on-warnings
 
-      # OIDC into the Task-1 CFN-deploy role, then validate every template server-side.
-      - name: Configure AWS credentials (OIDC)
+      # Static IAM user credentials (OIDC is NOT enabled for this org, so a
+      # role-to-assume federation would fail to authenticate). Store the keys as
+      # repo secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY on the config repo.
+      - name: Configure AWS credentials (static)
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4.3.1
         with:
-          role-to-assume: arn:aws:iam::196939353484:role/multistate-api-cfn-deploy-geetanjay-manik
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
       - name: aws cloudformation validate-template (each)
