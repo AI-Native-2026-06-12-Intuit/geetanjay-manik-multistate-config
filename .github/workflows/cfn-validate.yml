@@ -1,0 +1,54 @@
+# .github/workflows/cfn-validate.yml  (lives in the gitops config repo)
+# TASK 4: validate every CloudFormation template on any PR that touches cfn/.
+# Three gates: cfn-lint, cfn-nag (--fail-on-warnings), and the AWS
+# validate-template API. Set this as a REQUIRED status check on main.
+name: cfn-validate
+
+on:
+  pull_request:
+    paths: ["cfn/**"]
+
+concurrency:
+  group: cfn-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write   # OIDC -> assume the CFN-deploy role for validate-template
+
+jobs:
+  validate:
+    name: Lint + nag + validate-template
+    # REPO ADAPTATION: self-hosted (org hosted-Actions minutes are billing-blocked).
+    # The runner has cfn-lint, cfn_nag_scan (0.8.10), and the aws CLI on PATH.
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      # cfn-lint across every template. (The cfn-lint "serverless" profile targets
+      # SAM transforms; these are plain CFN, so the default rule set applies.)
+      - name: cfn-lint
+        run: cfn-lint cfn/*.yaml
+
+      # cfn-nag with --fail-on-warnings: accepted warnings are suppressed per-
+      # resource via Metadata.cfn_nag in the templates (with justifications), so a
+      # real, un-suppressed warning fails the build.
+      - name: cfn-nag
+        run: cfn_nag_scan --input-path cfn/ --fail-on-warnings
+
+      # OIDC into the Task-1 CFN-deploy role, then validate every template server-side.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::196939353484:role/multistate-api-cfn-deploy-geetanjay-manik
+          aws-region: us-east-1
+
+      - name: aws cloudformation validate-template (each)
+        run: |
+          set -euo pipefail
+          for t in cfn/*.yaml; do
+            echo "validate-template: $t"
+            aws cloudformation validate-template --template-body "file://$t" --region us-east-1 >/dev/null
+          done

@@ -1,0 +1,165 @@
+# cfn/multistate-app-dev.yaml
+# TASK 3 application stack: an RDS PostgreSQL instance + subnet group + DB SG + a
+# Secrets Manager secret holding the master credentials. Consumes the network
+# stack's exports via !ImportValue. The DB master password is NEVER a Parameter;
+# CFN generates it (GenerateSecretString) and the DBInstance resolves it via the
+# {{resolve:secretsmanager:...}} dynamic reference -- CFN state never holds the
+# plaintext. Stateful resources carry BOTH DeletionPolicy + UpdateReplacePolicy Retain.
+#
+# REPO SUB (shared account 196939353484): NetworkStackName default, secret name,
+# and DB identifier are TRAINEE-scoped to avoid collisions with other trainees.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: multistate application stack -- RDS + Secrets Manager.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+  NetworkStackName:
+    Type: String
+    Default: geetanjay-manik-multistate-network-dev   # REPO SUB: this trainee's network stack
+    Description: Name of the network stack whose exports we !ImportValue.
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.small
+    AllowedValues: [db.t4g.small, db.t4g.medium, db.m6g.large]
+  CreateDatabase:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    # REPO ADAPTATION: an Organizations SCP (p-4x3jp319) explicitly DENIES
+    # rds:CreateDBInstance in this shared account, so the RDS instance can't be
+    # created here. Set to "false" in this account to deploy everything EXCEPT the
+    # DB instance (the importing subnet group + SG still prove the cross-stack refs
+    # and the Export-in-use safety). Default "true" -> full stack in any account
+    # where the SCP does not apply.
+    Description: Whether to create the RDS instance (false where an SCP denies RDS).
+
+Conditions:
+  # Gates the RDS instance + its rotation attachment + endpoint output.
+  DeployDb: !Equals [!Ref CreateDatabase, "true"]
+
+Resources:
+  # --- Secrets Manager secret: the DB master credentials. GenerateSecretString
+  # is the curriculum-correct shape: CFN never sees the password value, only the
+  # secret's ARN. cloudformation:DescribeStacks cannot read the password.
+  DbMasterSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: Uses the default aws/secretsmanager KMS key -- acceptable for dev; a CMK is a prod hardening step.
+    Properties:
+      Name:        multistate/geetanjay-manik/dev/db-master   # REPO SUB: trainee-scoped (secret names are account-global)
+      Description: !Sub "multistate DB master credentials, ${EnvName}."
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "multistate_master"}'
+        GenerateStringKey:    password
+        ExcludeCharacters:    '"@/\\'
+        PasswordLength:       32
+      Tags:
+        - {Key: Env,     Value: !Ref EnvName}
+        - {Key: Project, Value: multistate}
+
+  # --- DB subnet group spanning the private subnets imported from the network
+  # stack. !Split + !ImportValue is the cross-stack pattern.
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub "multistate ${EnvName} private subnets"
+      SubnetIds:
+        !Split
+          - ","
+          - !ImportValue
+            "Fn::Sub": "${NetworkStackName}-PrivateSubnets"
+      Tags:
+        - {Key: Env,     Value: !Ref EnvName}
+        - {Key: Project, Value: multistate}
+
+  # --- DB security group: ingress 5432 only from the app SG (cross-stack import).
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "multistate ${EnvName} DB SG (5432 from app SG only)."
+      VpcId:
+        !ImportValue
+          "Fn::Sub": "${NetworkStackName}-VpcId"
+      SecurityGroupIngress:
+        - IpProtocol:             tcp
+          FromPort:               5432
+          ToPort:                 5432
+          SourceSecurityGroupId:
+            !ImportValue
+              "Fn::Sub": "${NetworkStackName}-AppSgId"
+          Description: Postgres from app SG only.
+      SecurityGroupEgress:
+        # Explicit no-egress: RDS never initiates outbound connections, so lock it
+        # down (implicit default is allow-all-out -- cfn-nag F1000). A rule to
+        # 127.0.0.1/32 makes "no egress" explicit and auditable.
+        - IpProtocol: "-1"
+          CidrIp:     127.0.0.1/32
+          Description: No egress required (RDS does not initiate outbound).
+      Tags:
+        - {Key: Name, Value: !Sub "multistate-${EnvName}-db-sg"}
+
+  # --- The RDS instance. Stateful: Retain on BOTH policies. MasterUsername +
+  # MasterUserPassword come from Secrets Manager via dynamic reference; the
+  # password never appears in CFN state.
+  # AUDIT NOTE: explicit DependsOn on the secret -- a {{resolve}} by literal name
+  # does NOT create an implicit dependency, so without this CFN can try to create
+  # the DBInstance before the secret exists and the resolve fails. The reference
+  # template omits it.
+  DbInstance:
+    Type: AWS::RDS::DBInstance
+    Condition: DeployDb
+    DependsOn: DbMasterSecret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: Explicit DBInstanceIdentifier is intentional -- stable endpoint/identifier for cross-stack exports and Secrets Manager rotation targeting.
+    Properties:
+      DBInstanceIdentifier:  !Sub "geetanjay-manik-multistate-${EnvName}"
+      Engine:                postgres
+      EngineVersion:         "16.9"   # REPO SUB: 16.3 is deprecated (can't create new instances)
+      DBInstanceClass:       !Ref DbInstanceClass
+      AllocatedStorage:      "20"
+      StorageType:           gp3
+      StorageEncrypted:      true
+      DBSubnetGroupName:     !Ref DbSubnetGroup
+      VPCSecurityGroups:     [!Ref DbSecurityGroup]
+      PubliclyAccessible:    false
+      MultiAZ:               false
+      BackupRetentionPeriod: 7
+      DeletionProtection:    true
+      # Plain strings (not Fn::Sub -- no ${} vars here): CFN resolves the
+      # {{resolve:secretsmanager:...}} dynamic reference regardless.
+      MasterUsername:     "{{resolve:secretsmanager:multistate/geetanjay-manik/dev/db-master:SecretString:username}}"
+      MasterUserPassword: "{{resolve:secretsmanager:multistate/geetanjay-manik/dev/db-master:SecretString:password}}"
+      Tags:
+        - {Key: Env,     Value: !Ref EnvName}
+        - {Key: Project, Value: multistate}
+
+  # --- Secret-to-DB attachment: rotation can target the live DB ARN.
+  SecretTargetAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Condition: DeployDb
+    Properties:
+      SecretId:   !Ref DbMasterSecret
+      TargetId:   !Ref DbInstance
+      TargetType: AWS::RDS::DBInstance
+
+Outputs:
+  DbEndpoint:
+    Condition: DeployDb
+    Value: !GetAtt DbInstance.Endpoint.Address
+    Export: {Name: !Sub "${AWS::StackName}-DbEndpoint"}
+  DbSecretArn:
+    Value: !Ref DbMasterSecret
+    Export: {Name: !Sub "${AWS::StackName}-DbSecretArn"}
